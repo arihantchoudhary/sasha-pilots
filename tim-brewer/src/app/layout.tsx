@@ -1,6 +1,19 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import React from "react";
+
+declare module "react" {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace JSX {
+    interface IntrinsicElements {
+      'elevenlabs-convai': {
+        'agent-id': string;
+        children?: React.ReactNode;
+      };
+    }
+  }
+}
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,7 +41,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
-        <elevenlabs-convai agent-id="agent_0001k1cy1sc3e8ca6v60k01jkkz5"></elevenlabs-convai>
+        <elevenlabs-convai agent-id="agent_0001k1cy1sc3e8ca6v60k01jkkz5" />
         <script src="https://unpkg.com/@elevenlabs/convai-widget-embed" async type="text/javascript"></script>
       </body>
     </html>
