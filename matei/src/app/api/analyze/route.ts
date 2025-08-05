@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     }
 
     // Format transcript for better context
-    const formattedTranscript = transcript.map((turn: any) => 
+    const formattedTranscript = transcript.map((turn: { role: string; message: string }) => 
       `${turn.role.toUpperCase()}: ${turn.message}`
     ).join('\n\n');
 

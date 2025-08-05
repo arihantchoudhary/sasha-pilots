@@ -1,0 +1,17 @@
+The ternary structure should be:
+{condition ? (
+  // true case
+) : (
+  // false case
+)}
+
+Currently we have:
+{filteredConversations.length === 0 ? (
+  <div>...</div>
+) : (
+  filteredConversations.map(() => (
+    // content
+  ))
+)}
+
+The issue is we have )) )} instead of )) )}

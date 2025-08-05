@@ -1,18 +1,18 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface TranscriptTurn {
   role: 'agent' | 'user';
   message: string;
   time_in_call_secs: number;
-  conversation_turn_metrics?: any;
+  conversation_turn_metrics?: Record<string, unknown>;
 }
 
 interface ConversationAnalysis {
   call_successful: string;
   transcript_summary: string | null;
-  evaluation_criteria_results?: any;
+  evaluation_criteria_results?: Record<string, unknown>;
 }
 
 interface ConversationMetadata {
@@ -28,7 +28,7 @@ interface ConversationDetails {
   transcript: TranscriptTurn[];
   metadata: ConversationMetadata;
   analysis: ConversationAnalysis;
-  tool_calls?: any[];
+  tool_calls?: Record<string, unknown>[];
 }
 
 interface Conversation {
@@ -56,7 +56,7 @@ export default function Dashboard() {
   const [viewMode, setViewMode] = useState<'last' | 'all'>('last');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [, setCopyStatus] = useState<string | null>(null);
   const [expandedQA, setExpandedQA] = useState<string | null>(null);
   const [questions, setQuestions] = useState<{[key: string]: string}>({});
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
@@ -69,15 +69,7 @@ export default function Dashboard() {
   const [successFilter, setSuccessFilter] = useState('all');
   const [dateFilter, setDateFilter] = useState('all');
 
-  useEffect(() => {
-    fetchConversations();
-  }, []);
-
-  useEffect(() => {
-    applyFilters();
-  }, [conversations, searchTerm, statusFilter, agentFilter, successFilter, dateFilter, viewMode]);
-
-  const applyFilters = () => {
+  const applyFilters = useCallback(() => {
     let filtered = conversations;
 
     if (viewMode === 'last') {
@@ -117,7 +109,15 @@ export default function Dashboard() {
     }
 
     setFilteredConversations(filtered);
-  };
+  }, [conversations, searchTerm, statusFilter, agentFilter, successFilter, dateFilter, viewMode]);
+
+  useEffect(() => {
+    fetchConversations();
+  }, []);
+
+  useEffect(() => {
+    applyFilters();
+  }, [applyFilters]);
 
   const getUniqueAgents = () => {
     const agents = [...new Set(conversations.map(conv => conv.agent_name))];
@@ -151,15 +151,7 @@ export default function Dashboard() {
     }
   };
 
-  const formatDate = (unixSecs: number) => {
-    return new Date(unixSecs * 1000).toLocaleString();
-  };
 
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
 
   const getDaysAgo = (unixSecs: number) => {
     const now = Date.now() / 1000;
@@ -168,25 +160,6 @@ export default function Dashboard() {
     return days === 0 ? 'today' : `${days} days ago`;
   };
 
-  const copyTranscript = async (conversationId: string) => {
-    try {
-      const response = await fetch(`/api/conversations/${conversationId}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch conversation details');
-      }
-      const data: ConversationDetails = await response.json();
-      
-      const transcriptText = data.transcript?.map(turn => 
-        `${turn.role.toUpperCase()}: ${turn.message}`
-      ).join('\\n\\n') || 'No transcript available';
-      
-      await navigator.clipboard.writeText(transcriptText);
-      setCopyStatus(conversationId);
-      setTimeout(() => setCopyStatus(null), 2000);
-    } catch (err) {
-      console.error('Error copying transcript:', err);
-    }
-  };
 
   const askQuestion = async (conversationId: string) => {
     const question = questions[conversationId];
@@ -302,7 +275,7 @@ export default function Dashboard() {
               {/* Conversation Preview */}
               <div className="mb-3">
                 <p className="text-gray-700 text-sm italic">
-                  "{conversation.transcript_summary || 'No preview available'}"
+                  &ldquo;{conversation.transcript_summary || 'No preview available'}&rdquo;
                 </p>
               </div>
               
