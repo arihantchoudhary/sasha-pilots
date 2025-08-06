@@ -69,6 +69,7 @@ export default function Dashboard() {
   const [emailRecipient, setEmailRecipient] = useState('');
   const [emailPreview, setEmailPreview] = useState('');
   const [loadingEmailPreview, setLoadingEmailPreview] = useState(false);
+  const [copyingTranscript, setCopyingTranscript] = useState<{[key: string]: boolean}>({});
   
   
   // Filter states
@@ -376,6 +377,39 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
     setEmailModal({ conversationId, isOpen: true });
   };
 
+  const copyTranscript = async (conversationId: string) => {
+    setCopyingTranscript(prev => ({ ...prev, [conversationId]: true }));
+    
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch conversation details');
+      }
+      const conversationData: ConversationDetails = await response.json();
+      
+      const formattedTranscript = conversationData.transcript.map(turn => 
+        `${turn.role.toUpperCase()}: ${turn.message}`
+      ).join('\n\n');
+      
+      const blob = new Blob([formattedTranscript], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transcript-${conversationId}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      setCopyStatus(conversationId);
+      setTimeout(() => setCopyStatus(null), 2000);
+    } catch (error) {
+      console.error('Failed to copy transcript:', error);
+    } finally {
+      setCopyingTranscript(prev => ({ ...prev, [conversationId]: false }));
+    }
+  };
+
   const renderConversationItem = (conversation: Conversation) => (
     <div key={conversation.conversation_id} className="flex items-center space-x-4">
       {/* Left Arrow - Delete */}
@@ -448,8 +482,16 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
                   </span>
                 </div>
                 
-                {/* Action Button */}
-                <div className="flex items-center">
+                {/* Action Buttons */}
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => copyTranscript(conversation.conversation_id)}
+                    disabled={copyingTranscript[conversation.conversation_id]}
+                    className="px-3 py-1 text-xs font-medium text-green-700 bg-green-100 hover:bg-green-200 rounded-md transition-colors disabled:opacity-50"
+                    title="Download transcript"
+                  >
+                    {copyingTranscript[conversation.conversation_id] ? 'Downloading...' : 'Download Transcript'}
+                  </button>
                   <button
                     onClick={() => toggleQA(conversation.conversation_id)}
                     className="px-3 py-1 text-xs font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 rounded-md transition-colors"
