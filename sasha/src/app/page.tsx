@@ -69,7 +69,10 @@ export default function Dashboard() {
   const [emailRecipient, setEmailRecipient] = useState('');
   const [emailPreview, setEmailPreview] = useState('');
   const [loadingEmailPreview, setLoadingEmailPreview] = useState(false);
-  const [copyingTranscript, setCopyingTranscript] = useState<{[key: string]: boolean}>({});
+  const [showingTranscript, setShowingTranscript] = useState<{[key: string]: boolean}>({});
+  const [transcripts, setTranscripts] = useState<{[key: string]: TranscriptTurn[]}>({});
+  const [loadingTranscript, setLoadingTranscript] = useState<{[key: string]: boolean}>({});
+  const [participantNames, setParticipantNames] = useState<{[key: string]: string}>({});
   
   
   // Filter states
@@ -78,6 +81,36 @@ export default function Dashboard() {
   const [agentFilter, setAgentFilter] = useState('all');
   const [successFilter, setSuccessFilter] = useState('all');
   const [dateFilter, setDateFilter] = useState('all');
+
+  // Extract participant name from transcript
+  const extractParticipantName = (transcript: TranscriptTurn[]): string => {
+    if (!transcript || transcript.length === 0) return '';
+    
+    // Look at first few user messages for introductions
+    const userMessages = transcript.filter(turn => turn.role === 'user').slice(0, 3);
+    
+    for (const turn of userMessages) {
+      // Common introduction patterns
+      const patterns = [
+        /(?:hi|hello|hey)(?:,)?\s+(?:i'm|i am|this is)\s+([a-z]+(?:\s+[a-z]+)?)/i,
+        /(?:my name is|i'm|i am)\s+([a-z]+(?:\s+[a-z]+)?)/i,
+        /(?:this is|speaking with|talking to)\s+([a-z]+(?:\s+[a-z]+)?)/i,
+        /([a-z]+)\s+(?:here|speaking)/i
+      ];
+      
+      for (const pattern of patterns) {
+        const match = turn.message.match(pattern);
+        if (match && match[1]) {
+          // Capitalize first letter of each word
+          return match[1].split(' ').map(word => 
+            word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+          ).join(' ');
+        }
+      }
+    }
+    
+    return '';
+  };
 
   const applyFilters = useCallback(() => {
     let filtered = conversations;
@@ -154,6 +187,14 @@ export default function Dashboard() {
       );
       setConversations(sortedConversations);
       setFilteredConversations(sortedConversations);
+      
+      // Auto-generate summaries for recent conversations only (first 5)
+      // with rate limiting (staggered requests)
+      sortedConversations.slice(0, 5).forEach((conversation, index) => {
+        setTimeout(() => {
+          generateGeminiSummary(conversation.conversation_id);
+        }, index * 3000); // 3 second delay between each request
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -163,11 +204,15 @@ export default function Dashboard() {
 
 
 
-  const getDaysAgo = (unixSecs: number) => {
-    const now = Date.now() / 1000;
-    const diffInSeconds = now - unixSecs;
-    const days = Math.floor(diffInSeconds / (24 * 60 * 60));
-    return days === 0 ? 'today' : `${days} days ago`;
+  const getFormattedDate = (unixSecs: number) => {
+    const date = new Date(unixSecs * 1000);
+    const options: Intl.DateTimeFormatOptions = {
+      weekday: 'short',
+      month: 'short', 
+      day: 'numeric',
+      year: 'numeric'
+    };
+    return date.toLocaleDateString('en-US', options);
   };
 
 
@@ -229,7 +274,7 @@ export default function Dashboard() {
   };
 
 
-  const generateGeminiSummary = async (conversationId: string) => {
+  const generateGeminiSummary = async (conversationId: string, retryCount = 0) => {
     if (geminiSummaries[conversationId] || loadingSummary[conversationId]) {
       return;
     }
@@ -255,6 +300,15 @@ export default function Dashboard() {
       });
       
       if (!summaryResponse.ok) {
+        // Handle rate limiting with exponential backoff
+        if (summaryResponse.status === 429 && retryCount < 3) {
+          const delay = Math.pow(2, retryCount) * 5000; // 5s, 10s, 20s
+          setTimeout(() => {
+            setLoadingSummary(prev => ({ ...prev, [conversationId]: false }));
+            generateGeminiSummary(conversationId, retryCount + 1);
+          }, delay);
+          return;
+        }
         throw new Error('Failed to generate summary');
       }
       
@@ -262,6 +316,13 @@ export default function Dashboard() {
       setGeminiSummaries(prev => ({ ...prev, [conversationId]: summary }));
     } catch (error) {
       console.error('Error generating summary:', error);
+      // Set a fallback message for failed summaries
+      if (retryCount >= 3) {
+        setGeminiSummaries(prev => ({ 
+          ...prev, 
+          [conversationId]: '**Issue:** Unable to generate summary due to rate limiting\n\n**Goal:** Please try again later\n\n**Next Steps:** Refresh the page or click to manually generate summary'
+        }));
+      }
     } finally {
       setLoadingSummary(prev => ({ ...prev, [conversationId]: false }));
     }
@@ -377,37 +438,38 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
     setEmailModal({ conversationId, isOpen: true });
   };
 
-  const copyTranscript = async (conversationId: string) => {
-    setCopyingTranscript(prev => ({ ...prev, [conversationId]: true }));
-    
-    try {
-      const response = await fetch(`/api/conversations/${conversationId}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch conversation details');
-      }
-      const conversationData: ConversationDetails = await response.json();
-      
-      const formattedTranscript = conversationData.transcript.map(turn => 
-        `${turn.role.toUpperCase()}: ${turn.message}`
-      ).join('\n\n');
-      
-      const blob = new Blob([formattedTranscript], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `transcript-${conversationId}.txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      setCopyStatus(conversationId);
-      setTimeout(() => setCopyStatus(null), 2000);
-    } catch (error) {
-      console.error('Failed to copy transcript:', error);
-    } finally {
-      setCopyingTranscript(prev => ({ ...prev, [conversationId]: false }));
+  const toggleTranscript = async (conversationId: string) => {
+    // If already showing, just toggle off
+    if (showingTranscript[conversationId]) {
+      setShowingTranscript(prev => ({ ...prev, [conversationId]: false }));
+      return;
     }
+    
+    // If not loaded yet, fetch the transcript
+    if (!transcripts[conversationId]) {
+      setLoadingTranscript(prev => ({ ...prev, [conversationId]: true }));
+      
+      try {
+        const response = await fetch(`/api/conversations/${conversationId}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch conversation details');
+        }
+        const conversationData: ConversationDetails = await response.json();
+        
+        setTranscripts(prev => ({ ...prev, [conversationId]: conversationData.transcript }));
+        
+        // Extract and store participant name
+        const participantName = extractParticipantName(conversationData.transcript);
+        setParticipantNames(prev => ({ ...prev, [conversationId]: participantName }));
+      } catch (error) {
+        console.error('Failed to fetch transcript:', error);
+      } finally {
+        setLoadingTranscript(prev => ({ ...prev, [conversationId]: false }));
+      }
+    }
+    
+    // Toggle visibility
+    setShowingTranscript(prev => ({ ...prev, [conversationId]: true }));
   };
 
   const renderConversationItem = (conversation: Conversation) => (
@@ -427,21 +489,30 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
       <div className="flex-1 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-all duration-200 overflow-hidden">
         <div className="p-4">
           <div className="flex items-start space-x-4">
-            {/* Emoji Indicator */}
-            <div className="flex-shrink-0">
-              <span className="text-2xl">💭</span>
-            </div>
             
             {/* Main Content */}
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center space-x-3">
+              <div className="mb-2">
+                <div className="flex items-center justify-between mb-1">
                   <span className="text-sm font-medium text-gray-900">
                     {conversation.call_summary_title || 'Untitled Conversation'}
                   </span>
                   <span className="text-sm text-gray-500">
-                    {getDaysAgo(conversation.start_time_unix_secs)}
+                    {getFormattedDate(conversation.start_time_unix_secs)}
                   </span>
+                </div>
+                
+                {/* Meeting metadata */}
+                <div className="flex items-center space-x-4 text-xs text-gray-600">
+                  {participantNames[conversation.conversation_id] && (
+                    <div className="flex items-center space-x-1">
+                      <span>👤</span>
+                      <span>Meeting with: {participantNames[conversation.conversation_id]}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center space-x-1">
+                    <span>Agent: {conversation.agent_name}</span>
+                  </div>
                 </div>
               </div>
               
@@ -454,18 +525,52 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
                   </div>
                 ) : geminiSummaries[conversation.conversation_id] ? (
                   <div className="text-gray-700 text-sm">
-                    <div className="whitespace-pre-line">{geminiSummaries[conversation.conversation_id]}</div>
+                    <div className="space-y-3">
+                      {/* Parse and format the structured summary */}
+                      {geminiSummaries[conversation.conversation_id].split('\n\n').map((section, index) => {
+                        const trimmedSection = section.trim();
+                        if (trimmedSection.startsWith('**Issue:**')) {
+                          return (
+                            <div key={index} className="flex items-start space-x-2">
+                              <span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 flex-shrink-0 w-20">
+                                Issue
+                              </span>
+                              <p className="text-gray-700 text-sm">{trimmedSection.replace('**Issue:**', '').trim()}</p>
+                            </div>
+                          );
+                        } else if (trimmedSection.startsWith('**Goal:**')) {
+                          return (
+                            <div key={index} className="flex items-start space-x-2">
+                              <span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 flex-shrink-0 w-20">
+                                Goal
+                              </span>
+                              <p className="text-gray-700 text-sm">{trimmedSection.replace('**Goal:**', '').trim()}</p>
+                            </div>
+                          );
+                        } else if (trimmedSection.startsWith('**Next Steps:**')) {
+                          return (
+                            <div key={index} className="flex items-start space-x-2">
+                              <span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 flex-shrink-0 w-20">
+                                Next Steps
+                              </span>
+                              <p className="text-gray-700 text-sm">{trimmedSection.replace('**Next Steps:**', '').trim()}</p>
+                            </div>
+                          );
+                        }
+                        return null;
+                      }).filter(Boolean)}
+                    </div>
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    <p className="text-gray-700 text-sm italic">
+                    <div className="text-gray-700 text-sm italic">
                       &ldquo;{conversation.transcript_summary || 'No preview available'}&rdquo;
-                    </p>
+                    </div>
                     <button
                       onClick={() => generateGeminiSummary(conversation.conversation_id)}
                       className="text-blue-600 hover:text-blue-800 text-xs underline"
                     >
-                      Generate 3 main takeaways
+                      Generate takeaways
                     </button>
                   </div>
                 )}
@@ -474,27 +579,24 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
               {/* Status and Actions */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-4">
-                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                    Status: open
-                  </span>
                   <span className="text-xs text-gray-500">
-                    {getDaysAgo(conversation.start_time_unix_secs)}
+                    {getFormattedDate(conversation.start_time_unix_secs)}
                   </span>
                 </div>
                 
                 {/* Action Buttons */}
                 <div className="flex items-center space-x-2">
                   <button
-                    onClick={() => copyTranscript(conversation.conversation_id)}
-                    disabled={copyingTranscript[conversation.conversation_id]}
+                    onClick={() => toggleTranscript(conversation.conversation_id)}
+                    disabled={loadingTranscript[conversation.conversation_id]}
                     className="px-3 py-1 text-xs font-medium text-green-700 bg-green-100 hover:bg-green-200 rounded-md transition-colors disabled:opacity-50"
-                    title="Download transcript"
+                    title={showingTranscript[conversation.conversation_id] ? "Hide transcript" : "Show transcript"}
                   >
-                    {copyingTranscript[conversation.conversation_id] ? 'Downloading...' : 'Download Transcript'}
+                    {loadingTranscript[conversation.conversation_id] ? 'Loading...' : showingTranscript[conversation.conversation_id] ? 'Hide Transcript' : 'Show Transcript'}
                   </button>
                   <button
                     onClick={() => toggleQA(conversation.conversation_id)}
-                    className="px-3 py-1 text-xs font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 rounded-md transition-colors"
+                    className="px-3 py-1 text-xs font-medium text-blue-800 bg-blue-100 hover:bg-blue-200 rounded-md transition-colors"
                   >
                     chat with transcript
                   </button>
@@ -502,6 +604,36 @@ Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
               </div>
             </div>
           </div>
+          
+          {/* Expanded Transcript Display */}
+          {showingTranscript[conversation.conversation_id] && transcripts[conversation.conversation_id] && (
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              <div className="bg-gray-50 rounded-lg p-4 max-h-96 overflow-y-auto">
+                <h4 className="text-sm font-medium text-gray-700 mb-3">Conversation Transcript</h4>
+                <div className="space-y-3">
+                  {transcripts[conversation.conversation_id].map((turn, index) => (
+                    <div key={index} className={`p-3 rounded-md ${
+                      turn.role === 'agent' 
+                        ? 'bg-blue-50 border-l-4 border-blue-400' 
+                        : 'bg-green-50 border-l-4 border-green-400'
+                    }`}>
+                      <div className="flex items-center space-x-2 mb-1">
+                        <span className={`text-xs font-medium ${
+                          turn.role === 'agent' ? 'text-blue-700' : 'text-green-700'
+                        }`}>
+                          {turn.role === 'agent' ? '🤖 Agent' : '👤 User'}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {Math.floor(turn.time_in_call_secs / 60)}:{String(turn.time_in_call_secs % 60).padStart(2, '0')}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-800">{turn.message}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           
           {/* Expanded Q&A Interface */}
           {expandedQA === conversation.conversation_id && (

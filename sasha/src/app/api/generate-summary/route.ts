@@ -25,17 +25,20 @@ export async function POST(request: Request) {
       `${turn.role.toUpperCase()}: ${turn.message}`
     ).join('\n\n');
 
-    const prompt = `Based on the following conversation transcript, please generate exactly 3 main takeaways from this conversation. Format your response as a simple numbered list.
+    const prompt = `Based on the following conversation transcript, please analyze and structure the key insights into three specific categories. 
 
 TRANSCRIPT:
 ${formattedTranscript}
 
-Please provide exactly 3 main takeaways in this format:
-1. [First main takeaway]
-2. [Second main takeaway] 
-3. [Third main takeaway]
+Please provide your analysis in this exact format:
 
-Keep each takeaway concise but informative, focusing on the most important points, decisions, or insights from the conversation.`;
+**Issue:** [Identify the main problem, challenge, or concern discussed in the conversation]
+
+**Goal:** [Define the primary objective, desired outcome, or what needs to be achieved]
+
+**Next Steps:** [Outline the specific actions, decisions, or follow-up items that should happen next]
+
+Keep each section concise but actionable, focusing on the most important aspects from the conversation.`;
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
       method: 'POST',
