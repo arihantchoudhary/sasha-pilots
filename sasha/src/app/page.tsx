@@ -12,6 +12,7 @@ interface TranscriptTurn {
 interface ConversationAnalysis {
   call_successful: string;
   transcript_summary: string | null;
+  gemini_summary?: string | null;
   evaluation_criteria_results?: Record<string, unknown>;
 }
 
@@ -42,6 +43,7 @@ interface Conversation {
   call_successful: string;
   transcript_summary: string | null;
   call_summary_title: string | null;
+  gemini_summary?: string | null;
 }
 
 interface ConversationsResponse {
@@ -61,6 +63,12 @@ export default function Dashboard() {
   const [questions, setQuestions] = useState<{[key: string]: string}>({});
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
   const [loadingAnalysis, setLoadingAnalysis] = useState<{[key: string]: boolean}>({});
+  const [loadingSummary, setLoadingSummary] = useState<{[key: string]: boolean}>({});
+  const [geminiSummaries, setGeminiSummaries] = useState<{[key: string]: string}>({});
+  const [emailModal, setEmailModal] = useState<{conversationId: string; isOpen: boolean} | null>(null);
+  const [emailRecipient, setEmailRecipient] = useState('');
+  const [emailPreview, setEmailPreview] = useState('');
+  const [loadingEmailPreview, setLoadingEmailPreview] = useState(false);
   
   
   // Filter states
@@ -220,23 +228,152 @@ export default function Dashboard() {
   };
 
 
-  const sendSpaceFactEmail = async (conversationId: string) => {
+  const generateGeminiSummary = async (conversationId: string) => {
+    if (geminiSummaries[conversationId] || loadingSummary[conversationId]) {
+      return;
+    }
+
+    try {
+      setLoadingSummary(prev => ({ ...prev, [conversationId]: true }));
+      
+      // Fetch conversation details to get transcript
+      const response = await fetch(`/api/conversations/${conversationId}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch conversation details');
+      }
+      
+      const conversationDetails: ConversationDetails = await response.json();
+      
+      // Generate summary using Gemini
+      const summaryResponse = await fetch('/api/generate-summary', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ transcript: conversationDetails.transcript }),
+      });
+      
+      if (!summaryResponse.ok) {
+        throw new Error('Failed to generate summary');
+      }
+      
+      const { summary } = await summaryResponse.json();
+      setGeminiSummaries(prev => ({ ...prev, [conversationId]: summary }));
+    } catch (error) {
+      console.error('Error generating summary:', error);
+    } finally {
+      setLoadingSummary(prev => ({ ...prev, [conversationId]: false }));
+    }
+  };
+
+  const generateEmailPreview = async (conversationId: string) => {
+    try {
+      setLoadingEmailPreview(true);
+      
+      // Check if we already have a Gemini summary for this conversation
+      let summary = geminiSummaries[conversationId];
+      
+      // If no summary exists, generate one first
+      if (!summary) {
+        // Fetch conversation details to get transcript
+        const response = await fetch(`/api/conversations/${conversationId}`);
+        if (!response.ok) {
+          throw new Error('Failed to fetch conversation details');
+        }
+        
+        const conversationDetails: ConversationDetails = await response.json();
+        
+        // Generate summary using Gemini
+        const summaryResponse = await fetch('/api/generate-summary', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ transcript: conversationDetails.transcript }),
+        });
+        
+        if (!summaryResponse.ok) {
+          throw new Error('Failed to generate summary');
+        }
+        
+        const { summary: newSummary } = await summaryResponse.json();
+        summary = newSummary;
+        setGeminiSummaries(prev => ({ ...prev, [conversationId]: summary }));
+      }
+      
+      // Create email with actual summary content
+      const previewText = `Subject: Agenda for Our Upcoming Meeting
+
+Dear ${emailRecipient},
+
+I hope this email finds you well! Here are some ideas that I wanted to share about talking to you in our meeting:
+
+${summary}
+
+Looking forward to our discussion!
+
+Best regards,
+Sasha
+
+---
+Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
+      
+      setEmailPreview(previewText);
+    } catch (error) {
+      console.error('Error generating email preview:', error);
+      // Fallback to basic template if generation fails
+      const fallbackText = `Subject: Agenda for Our Upcoming Meeting
+
+Dear ${emailRecipient},
+
+I hope this email finds you well! Unfortunately, I encountered an issue preparing the meeting agenda ideas.
+
+Please try again or contact support if the issue persists.
+
+Best regards,
+Sasha
+
+---
+Meeting prep from conversation on ${new Date().toLocaleDateString()}`;
+      
+      setEmailPreview(fallbackText);
+    } finally {
+      setLoadingEmailPreview(false);
+    }
+  };
+
+  const confirmSendEmail = async (conversationId: string) => {
     try {
       const response = await fetch('/api/space-fact-email', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ conversationId }),
+        body: JSON.stringify({ 
+          conversationId,
+          recipient: emailRecipient 
+        }),
       });
       
       if (response.ok) {
+        // Close modal and reset state
+        setEmailModal(null);
+        setEmailRecipient('');
+        setEmailPreview('');
+        
+        // Show success feedback
         setCopyStatus(conversationId);
         setTimeout(() => setCopyStatus(null), 2000);
+      } else {
+        console.error('Failed to send email');
       }
     } catch (error) {
-      console.error('Error sending space fact email:', error);
+      console.error('Error sending email:', error);
     }
+  };
+
+  const openEmailModal = (conversationId: string) => {
+    setEmailModal({ conversationId, isOpen: true });
   };
 
   const renderConversationItem = (conversation: Conversation) => (
@@ -248,7 +385,7 @@ export default function Dashboard() {
         title="Delete conversation"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1-1H9a1 1 0 00-1 1v3M4 7h16" />
         </svg>
       </button>
 
@@ -276,9 +413,28 @@ export default function Dashboard() {
               
               {/* Conversation Preview */}
               <div className="mb-3">
-                <p className="text-gray-700 text-sm italic">
-                  &ldquo;{conversation.transcript_summary || 'No preview available'}&rdquo;
-                </p>
+                {loadingSummary[conversation.conversation_id] ? (
+                  <div className="flex items-center space-x-2">
+                    <div className="animate-spin h-4 w-4 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+                    <span className="text-gray-700 text-sm">Generating takeaways...</span>
+                  </div>
+                ) : geminiSummaries[conversation.conversation_id] ? (
+                  <div className="text-gray-700 text-sm">
+                    <div className="whitespace-pre-line">{geminiSummaries[conversation.conversation_id]}</div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-gray-700 text-sm italic">
+                      &ldquo;{conversation.transcript_summary || 'No preview available'}&rdquo;
+                    </p>
+                    <button
+                      onClick={() => generateGeminiSummary(conversation.conversation_id)}
+                      className="text-blue-600 hover:text-blue-800 text-xs underline"
+                    >
+                      Generate 3 main takeaways
+                    </button>
+                  </div>
+                )}
               </div>
               
               {/* Status and Actions */}
@@ -298,7 +454,7 @@ export default function Dashboard() {
                     onClick={() => toggleQA(conversation.conversation_id)}
                     className="px-3 py-1 text-xs font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 rounded-md transition-colors"
                   >
-                    Respond with care
+                    chat with transcript
                   </button>
                 </div>
               </div>
@@ -351,12 +507,12 @@ export default function Dashboard() {
 
       {/* Right Arrow - Send Email */}
       <button
-        onClick={() => sendSpaceFactEmail(conversation.conversation_id)}
+        onClick={() => openEmailModal(conversation.conversation_id)}
         className="flex items-center justify-center w-10 h-10 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full transition-colors flex-shrink-0"
         title="Send space fact email"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 3.26a2 2 0 001.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
         </svg>
       </button>
     </div>
@@ -528,6 +684,69 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Email Confirmation Modal */}
+      {emailModal?.isOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-medium mb-4">Send Space Fact Email</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Recipient Email
+                </label>
+                <input
+                  type="email"
+                  value={emailRecipient}
+                  onChange={(e) => setEmailRecipient(e.target.value)}
+                  placeholder="Enter recipient email address"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-600"
+                />
+              </div>
+
+              {emailRecipient && (
+                <div>
+                  <button
+                    onClick={() => generateEmailPreview(emailModal.conversationId)}
+                    disabled={loadingEmailPreview}
+                    className="text-blue-600 hover:text-blue-800 text-sm underline disabled:opacity-50"
+                  >
+                    {loadingEmailPreview ? 'Generating preview...' : 'Preview email content'}
+                  </button>
+                </div>
+              )}
+
+              {emailPreview && (
+                <div className="bg-gray-50 rounded-md p-3 max-h-40 overflow-y-auto">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Email Preview:</h4>
+                  <div className="text-sm text-gray-900 whitespace-pre-wrap">{emailPreview}</div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end space-x-3 mt-6">
+              <button
+                onClick={() => {
+                  setEmailModal(null);
+                  setEmailRecipient('');
+                  setEmailPreview('');
+                }}
+                className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => confirmSendEmail(emailModal.conversationId)}
+                disabled={!emailRecipient || !emailPreview}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Send Email
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
